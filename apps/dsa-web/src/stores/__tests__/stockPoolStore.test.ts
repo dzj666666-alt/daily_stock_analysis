@@ -174,6 +174,34 @@ describe('stockPoolStore', () => {
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
   });
 
+  it('accepts HK suffix codes from autocomplete without local validation errors', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-hk-1',
+      stockCode: '00700.HK',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: '00700.HK',
+      stockName: '腾讯控股',
+      originalQuery: '00700',
+      selectionSource: 'autocomplete',
+    });
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(state.isAnalyzing).toBe(false);
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '00700.HK',
+      reportType: 'detailed',
+      stockName: '腾讯控股',
+      originalQuery: '00700',
+      selectionSource: 'autocomplete',
+      notify: true,
+    }));
+  });
+
   it('merges newly discovered history items during silent refresh', async () => {
     useStockPoolStore.setState({
       historyItems: [historyItem],
@@ -337,5 +365,22 @@ describe('stockPoolStore', () => {
     const state = useStockPoolStore.getState();
     expect(state.activeTasks).toHaveLength(0);
     expect(state.error).toBeTruthy();
+  });
+
+  it('triggers an analysis with the forceRefresh flag', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-force-1',
+      status: 'pending',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: '600519',
+      forceRefresh: true,
+    });
+
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '600519',
+      forceRefresh: true,
+    }));
   });
 });

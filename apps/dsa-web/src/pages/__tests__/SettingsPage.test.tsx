@@ -1,11 +1,16 @@
 import type React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveWebBuildInfo } from '../../utils/constants';
 import SettingsPage from '../SettingsPage';
 
 const {
   exportDesktopEnv,
   importDesktopEnv,
+  desktopCheckForUpdates,
+  desktopGetUpdateState,
+  desktopOnUpdateStateChange,
+  desktopOpenReleasePage,
   load,
   clearToast,
   setActiveCategory,
@@ -17,9 +22,14 @@ const {
   refreshStatus,
   useAuthMock,
   useSystemConfigMock,
+  webBuildInfoMock,
 } = vi.hoisted(() => ({
   exportDesktopEnv: vi.fn(),
   importDesktopEnv: vi.fn(),
+  desktopCheckForUpdates: vi.fn(),
+  desktopGetUpdateState: vi.fn(),
+  desktopOnUpdateStateChange: vi.fn(),
+  desktopOpenReleasePage: vi.fn(),
   load: vi.fn(),
   clearToast: vi.fn(),
   setActiveCategory: vi.fn(),
@@ -31,6 +41,13 @@ const {
   refreshStatus: vi.fn(),
   useAuthMock: vi.fn(),
   useSystemConfigMock: vi.fn(),
+  webBuildInfoMock: {
+    version: '3.11.0',
+    rawVersion: '3.11.0',
+    buildId: 'build-20260329-021530Z',
+    buildTime: '2026-03-29T02:15:30.000Z',
+    isFallbackVersion: false,
+  },
 }));
 
 const mockedAnchorClick = vi.fn();
@@ -46,6 +63,14 @@ vi.mock('../../api/systemConfig', () => ({
     importDesktopEnv: (...args: unknown[]) => importDesktopEnv(...args),
   },
 }));
+
+vi.mock('../../utils/constants', async () => {
+  const actual = await vi.importActual<typeof import('../../utils/constants')>('../../utils/constants');
+  return {
+    ...actual,
+    WEB_BUILD_INFO: webBuildInfoMock,
+  };
+});
 
 vi.mock('../../components/settings', () => ({
   AuthSettingsCard: () => <div>认证与登录保护</div>,
@@ -67,9 +92,24 @@ vi.mock('../../components/settings', () => ({
       save llm channels
     </button>
   ),
-  SettingsAlert: ({ title, message }: { title: string; message: string }) => (
+  SettingsAlert: ({
+    title,
+    message,
+    actionLabel,
+    onAction,
+  }: {
+    title: string;
+    message: string;
+    actionLabel?: string;
+    onAction?: () => void;
+  }) => (
     <div>
       {title}:{message}
+      {actionLabel ? (
+        <button type="button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      ) : null}
     </div>
   ),
   SettingsCategoryNav: ({
@@ -112,6 +152,17 @@ vi.mock('../../components/settings', () => ({
     </section>
   ),
 }));
+
+function createDesktopRuntime(overrides: Record<string, unknown> = {}) {
+  return {
+    version: '3.12.0',
+    getUpdateState: desktopGetUpdateState,
+    checkForUpdates: desktopCheckForUpdates,
+    openReleasePage: desktopOpenReleasePage,
+    onUpdateStateChange: desktopOnUpdateStateChange,
+    ...overrides,
+  };
+}
 
 const baseCategories = [
   { category: 'system', title: 'System', description: '系统设置', displayOrder: 1, fields: [] },
@@ -262,6 +313,13 @@ describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    Object.assign(webBuildInfoMock, {
+      version: '3.11.0',
+      rawVersion: '3.11.0',
+      buildId: 'build-20260329-021530Z',
+      buildTime: '2026-03-29T02:15:30.000Z',
+      isFallbackVersion: false,
+    });
     load.mockResolvedValue(true);
     exportDesktopEnv.mockResolvedValue({
       content: 'STOCK_LIST=600519\n',
@@ -277,6 +335,20 @@ describe('SettingsPage', () => {
       updatedKeys: ['STOCK_LIST'],
       warnings: [],
     });
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'idle',
+      currentVersion: '3.12.0',
+      latestVersion: '',
+      message: '',
+    });
+    desktopCheckForUpdates.mockResolvedValue({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+    desktopOpenReleasePage.mockResolvedValue(true);
+    desktopOnUpdateStateChange.mockImplementation(() => () => undefined);
     useAuthMock.mockReturnValue({
       authEnabled: true,
       passwordChangeable: true,
@@ -298,6 +370,102 @@ describe('SettingsPage', () => {
     expect(load).toHaveBeenCalled();
   });
 
+  it('renders web build info in system settings', async () => {
+    render(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
+    expect(screen.getByText('3.11.0')).toBeInTheDocument();
+    expect(screen.getByText('build-20260329-021530Z')).toBeInTheDocument();
+    expect(screen.getByText('2026-03-29T02:15:30.000Z')).toBeInTheDocument();
+  });
+
+  it('renders desktop app version in system settings during desktop runtime', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
+    expect(screen.getByText('桌面端版本')).toBeInTheDocument();
+    expect(screen.getByText('3.12.0')).toBeInTheDocument();
+  });
+
+  it('keeps version grid at three columns when desktop runtime has no usable version', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '   ' };
+
+    render(<SettingsPage />);
+
+    const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
+    const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
+
+    expect(screen.queryByText('桌面端版本')).not.toBeInTheDocument();
+    expect(versionGrid).toHaveClass('md:grid-cols-3');
+    expect(versionGrid).not.toHaveClass('md:grid-cols-4');
+  });
+
+  it('ignores non-string desktop runtime version values without breaking render', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: 3120 };
+
+    render(<SettingsPage />);
+
+    const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
+    const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
+
+    expect(screen.queryByText('桌面端版本')).not.toBeInTheDocument();
+    expect(versionGrid).toHaveClass('md:grid-cols-3');
+  });
+
+  it('normalizes malformed desktop update payloads instead of throwing', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 123,
+      currentVersion: 3120,
+      latestVersion: null,
+      releaseUrl: { href: 'https://example.com' },
+      checkedAt: ['2026-04-25T01:02:00Z'],
+      message: false,
+      releaseName: { text: 'v3.13.0' },
+      tagName: undefined,
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    await waitFor(() => {
+      expect(desktopGetUpdateState).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole('button', { name: '检查更新' })).toBeInTheDocument();
+    expect(screen.queryByText('检查更新失败')).not.toBeInTheDocument();
+    expect(screen.queryByText('发现新版本')).not.toBeInTheDocument();
+  });
+
+  it('falls back to build identifier when package version is still placeholder', () => {
+    expect(resolveWebBuildInfo({
+      packageVersion: '0.0.0',
+      buildTimestamp: '2026-03-29T02:15:30.000Z',
+    })).toEqual({
+      version: 'build-20260329-021530Z',
+      rawVersion: '0.0.0',
+      buildId: 'build-20260329-021530Z',
+      buildTime: '2026-03-29T02:15:30.000Z',
+      isFallbackVersion: true,
+    });
+  });
+
+  it('renders fallback version hint when package version is placeholder', async () => {
+    Object.assign(webBuildInfoMock, {
+      version: 'build-20260329-021530Z',
+      rawVersion: '0.0.0',
+      buildId: 'build-20260329-021530Z',
+      buildTime: '2026-03-29T02:15:30.000Z',
+      isFallbackVersion: true,
+    });
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
+    expect(screen.getByText(/当前 package\.json 仍为占位版本 0\.0\.0/)).toBeInTheDocument();
+    expect(screen.getAllByText('build-20260329-021530Z')).toHaveLength(2);
+  });
+
   it('resets local drafts from the page header button', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
@@ -313,7 +481,7 @@ describe('SettingsPage', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  it('hides unavailable deep research and event monitor fields from the agent category', () => {
+  it('shows deep research and event monitor fields in the agent category when available', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'agent',
       itemsByCategory: {
@@ -349,7 +517,7 @@ describe('SettingsPage', () => {
               uiControl: 'number',
               isSensitive: false,
               isRequired: false,
-              isEditable: false,
+              isEditable: true,
               options: [],
               validation: {},
               displayOrder: 2,
@@ -367,7 +535,7 @@ describe('SettingsPage', () => {
               uiControl: 'switch',
               isSensitive: false,
               isRequired: false,
-              isEditable: false,
+              isEditable: true,
               options: [],
               validation: {},
               displayOrder: 3,
@@ -380,8 +548,8 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByText('AGENT_ORCHESTRATOR_TIMEOUT_S')).toBeInTheDocument();
-    expect(screen.queryByText('AGENT_DEEP_RESEARCH_BUDGET')).not.toBeInTheDocument();
-    expect(screen.queryByText('AGENT_EVENT_MONITOR_ENABLED')).not.toBeInTheDocument();
+    expect(screen.getByText('AGENT_DEEP_RESEARCH_BUDGET')).toBeInTheDocument();
+    expect(screen.getByText('AGENT_EVENT_MONITOR_ENABLED')).toBeInTheDocument();
   });
 
   it('reset button semantic: discards local changes without network request', () => {
@@ -438,7 +606,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders desktop env backup actions in desktop runtime and exports saved env', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '0.1.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
     render(<SettingsPage />);
 
@@ -452,7 +620,7 @@ describe('SettingsPage', () => {
   });
 
   it('asks for confirmation before importing when local drafts exist', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '0.1.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
     render(<SettingsPage />);
@@ -466,7 +634,7 @@ describe('SettingsPage', () => {
   });
 
   it('reloads config after successful desktop env import', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '0.1.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
     const { container } = render(<SettingsPage />);
 
@@ -486,7 +654,7 @@ describe('SettingsPage', () => {
   });
 
   it('shows an error when desktop env import succeeds but reload fails', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '0.1.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     load.mockResolvedValue(false);
 
     const { container } = render(<SettingsPage />);
@@ -508,5 +676,53 @@ describe('SettingsPage', () => {
     expect(screen.getByText('配置已导入但刷新失败')).toBeInTheDocument();
     expect(screen.getByText('备份已导入，但重新加载配置失败，请手动重载页面。')).toBeInTheDocument();
     expect(screen.queryByText('已导入 .env 备份并重新加载配置。')).not.toBeInTheDocument();
+  });
+
+  it('renders desktop update notice when a newer release is available', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'update-available',
+      currentVersion: '3.12.0',
+      latestVersion: '3.13.0',
+      releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+      message: '发现新版本 3.13.0，可前往 GitHub Releases 下载更新。',
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText(/发现新版本:当前 3\.12\.0，最新 3\.13\.0/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '前往下载' })).toBeInTheDocument();
+  });
+
+  it('checks desktop updates on demand and renders the latest-version state', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('已是最新版本:当前桌面端已是最新版本。')).toBeInTheDocument();
+  });
+
+  it('opens GitHub release page from desktop update notice', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'update-available',
+      currentVersion: '3.12.0',
+      latestVersion: '3.13.0',
+      releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+      message: '发现新版本 3.13.0，可前往 GitHub Releases 下载更新。',
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '前往下载' }));
+
+    await waitFor(() => {
+      expect(desktopOpenReleasePage).toHaveBeenCalledWith(
+        'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0'
+      );
+    });
   });
 });

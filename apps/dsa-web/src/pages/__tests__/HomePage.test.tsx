@@ -126,7 +126,7 @@ describe('HomePage', () => {
 
     expect(await screen.findByText('开始分析')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
-    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看')).toBeInTheDocument();
+    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
     expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
   });
 
@@ -154,6 +154,7 @@ describe('HomePage', () => {
     await waitFor(() => {
       expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
     });
+    expect(screen.getByText(/股票 600519 正在分析中/).closest('[role="alert"]')).toBeInTheDocument();
   });
 
   it('navigates to chat with report context when asking a follow-up question', async () => {
@@ -228,16 +229,16 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    const trigger = await screen.findByTitle('历史记录');
+    const trigger = await screen.findByRole('button', { name: '历史记录' });
     fireEvent.click(trigger);
 
-    expect(container.querySelector('.home-mobile-overlay')).toBeTruthy();
+    expect(container.querySelector('.page-drawer-overlay')).toBeTruthy();
     expect(container.querySelector('.dashboard-card')).toBeTruthy();
 
     fireEvent.click(container.querySelector('.fixed.inset-0.z-40') as HTMLElement);
 
     await waitFor(() => {
-      expect(container.querySelector('.home-mobile-overlay')).toBeFalsy();
+      expect(container.querySelector('.page-drawer-overlay')).toBeFalsy();
     });
   });
 
@@ -272,5 +273,43 @@ describe('HomePage', () => {
 
     expect(await screen.findByText('分析任务')).toBeInTheDocument();
     expect(screen.getByText('正在抓取最新行情')).toBeInTheDocument();
+  });
+
+  it('triggers reanalyze for the current report even if the search input has other text', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-re-1',
+      status: 'pending',
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // Wait for the report to load
+    await screen.findByText('趋势维持强势');
+
+    // Type something else in the search box
+    const input = screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');
+    fireEvent.change(input, { target: { value: 'AAPL' } });
+
+    // Click "Reanalyze"
+    const reanalyzeButton = screen.getByRole('button', { name: '重新分析' });
+    fireEvent.click(reanalyzeButton);
+
+    // Verify that analyzeAsync is called with the report's stock code, not the search box text
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '600519',
+      originalQuery: '600519',
+      forceRefresh: true,
+    }));
   });
 });

@@ -25,6 +25,14 @@ def ensure_litellm_stub() -> None:
     class _DummyRouter:  # pragma: no cover
         pass
 
+    class _DummyRateLimitError(Exception):
+        pass
+
+    class _DummyContextWindowExceededError(Exception):
+        pass
+
     litellm_stub.Router = _DummyRouter
+    litellm_stub.RateLimitError = _DummyRateLimitError
+    litellm_stub.ContextWindowExceededError = _DummyContextWindowExceededError
     litellm_stub.completion = lambda **kwargs: None
     sys.modules["litellm"] = litellm_stub
